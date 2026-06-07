@@ -6,6 +6,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
+import re
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -24,24 +25,37 @@ st.set_page_config(
 # ─────────────────────────────────────────
 st.markdown("""
 <style>
+    html, body, [class*="css"], .stApp {
+        color: #1a1a1a !important;
+        background-color: #ffffff !important;
+    }
     .main-header {font-size:2.2rem; font-weight:700; color:#1a237e; margin-bottom:0.2rem;}
-    .sub-header  {font-size:1rem;  color:#546e7a; margin-bottom:1.5rem;}
-    .metric-card {
-        background: linear-gradient(135deg,#e8eaf6,#c5cae9);
-        border-radius:12px; padding:18px 20px; text-align:center;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-    }
-    .metric-val  {font-size:1.7rem; font-weight:700; color:#1a237e;}
-    .metric-lbl  {font-size:0.82rem; color:#546e7a; margin-top:4px;}
-    .anomaly-box {
-        background:#fff3e0; border-left:4px solid #ff6f00;
-        padding:14px 18px; border-radius:6px; margin:10px 0;
-    }
+    .sub-header  {font-size:1rem;  color:#37474f; margin-bottom:1.5rem;}
+    .section-title{font-size:1.3rem; font-weight:600; color:#1a237e; margin:1rem 0 0.5rem;}
     .insight-box {
-        background:#e8f5e9; border-left:4px solid #2e7d32;
+        background:#e8f5e9; border-left:5px solid #2e7d32;
         padding:14px 18px; border-radius:6px; margin:10px 0;
+        color:#1a1a1a !important; font-size:0.97rem;
     }
-    .section-title{font-size:1.3rem; font-weight:600; color:#283593; margin:1rem 0 0.5rem;}
+    .insight-box b, .insight-box strong { color:#1b5e20 !important; }
+    .anomaly-box {
+        background:#fff8e1; border-left:5px solid #f57f17;
+        padding:14px 18px; border-radius:6px; margin:10px 0;
+        color:#1a1a1a !important; font-size:0.97rem;
+    }
+    .anomaly-box b, .anomaly-box strong { color:#e65100 !important; }
+    section[data-testid="stSidebar"] {
+        background-color: #f0f4ff !important;
+    }
+    section[data-testid="stSidebar"] * { color:#1a1a1a !important; }
+    [data-testid="stMetric"] {
+        background:#f0f4ff; border-radius:10px;
+        padding:12px; border:1px solid #c5cae9;
+    }
+    [data-testid="stMetricLabel"] p  { color:#37474f !important; font-weight:600; }
+    [data-testid="stMetricValue"]    { color:#1a237e !important; font-weight:700; }
+    [data-testid="stMetricDelta"]    { font-weight:600 !important; }
+    .stTabs [data-baseweb="tab"] { color:#1a237e !important; font-weight:600; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -115,20 +129,40 @@ latest = df.index[-1]
 # 2. ANOMALY DETECTION
 # ─────────────────────────────────────────
 def detect_anomalies(series, col_name, z_thresh=2.0):
-    """Returns list of (quarter, value, z-score) for outliers."""
+    """
+    Flags only CONCERNING anomalies:
+    - Negative values (always flagged)
+    - Sudden QoQ drops > 25%
+    - Z-score outliers on the NEGATIVE side only (low values, not record highs)
+    """
     mu, sigma = series.mean(), series.std()
     anomalies = []
-    for idx, val in series.items():
-        if pd.isna(val):
-            continue
-        z = abs((val - mu) / sigma) if sigma != 0 else 0
-        if z > z_thresh:
-            anomalies.append({"Quarter": str(idx), "Metric": col_name,
-                               "Value": round(val, 2), "Z-Score": round(z, 2)})
+    vals = series.dropna()
+    for i, (idx, val) in enumerate(vals.items()):
+        reasons = []
+        # Rule 1: Negative value
+        if val < 0:
+            reasons.append("Negative value")
+        # Rule 2: Sudden QoQ drop > 25%
+        if i > 0:
+            prev = vals.iloc[i - 1]
+            if prev != 0 and (val - prev) / abs(prev) < -0.25:
+                reasons.append(f"QoQ drop {((val-prev)/abs(prev)*100):.1f}%")
+        # Rule 3: Z-score negative outlier only (low values, not record highs)
+        z = (val - mu) / sigma if sigma != 0 else 0
+        if z < -2.0:
+            reasons.append(f"Z-score = {z:.2f} (unusually low)")
+        if reasons:
+            anomalies.append({
+                "Quarter": str(idx),
+                "Metric": col_name,
+                "Value": round(val, 2),
+                "Issue": " | ".join(reasons)
+            })
     return anomalies
 
 anomalies = []
-for col in ["Sales", "Other Income", "Net Profit", "EPS in Rs", "Operating Profit"]:
+for col in ["Sales", "Other Income", "Net Profit", "EPS in Rs", "Operating Profit", "OPM %"]:
     anomalies.extend(detect_anomalies(df[col], col))
 
 
@@ -249,7 +283,7 @@ if page == "📈 Overview":
                              marker=dict(size=7)), secondary_y=True)
     fig.update_layout(title="Revenue, Net Profit & EPS — Quarterly Trend",
                       barmode="group", height=400, legend=dict(orientation="h", y=1.12),
-                      plot_bgcolor="white", paper_bgcolor="white",
+                      template="plotly_white", plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
                       xaxis=dict(tickangle=-30))
     fig.update_yaxes(title_text="₹ Crores", secondary_y=False)
     fig.update_yaxes(title_text="EPS (₹)", secondary_y=True)
@@ -308,7 +342,7 @@ elif page == "🔍 EDA & Trends":
                     hovertemplate=f"<b>{m}</b><br>Quarter: %{{x}}<br>Value: %{{y:,.2f}}<extra></extra>",
                 ))
         fig.update_layout(title="Multi-metric Trend", height=420,
-                          plot_bgcolor="white", paper_bgcolor="white",
+                          template="plotly_white", plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
                           xaxis=dict(tickangle=-30),
                           legend=dict(orientation="h", y=1.1))
         st.plotly_chart(fig, use_container_width=True)
@@ -323,7 +357,7 @@ elif page == "🔍 EDA & Trends":
             marker_color=["#e53935" if v < 8 else "#43a047" for v in df["OPM %"]],
             text=[f"{v:.0f}%" for v in df["OPM %"]], textposition="outside",
         ))
-        fig2.update_layout(height=320, plot_bgcolor="white", paper_bgcolor="white",
+        fig2.update_layout(height=320, template="plotly_white", plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
                            xaxis=dict(tickangle=-30))
         st.plotly_chart(fig2, use_container_width=True)
 
@@ -336,7 +370,7 @@ elif page == "🔍 EDA & Trends":
             text=[f"{v:,.0f}" for v in df["Other Income"]], textposition="outside",
         ))
         fig3.add_hline(y=0, line_dash="dash", line_color="black")
-        fig3.update_layout(height=320, plot_bgcolor="white", paper_bgcolor="white",
+        fig3.update_layout(height=320, template="plotly_white", plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
                            xaxis=dict(tickangle=-30))
         st.plotly_chart(fig3, use_container_width=True)
 
@@ -379,10 +413,10 @@ elif page == "⚠️ Anomalies":
 
     if anomalies:
         adf = pd.DataFrame(anomalies)
-        st.dataframe(adf.style.highlight_max(subset=["Z-Score"], color="#ffcdd2"),
-                     use_container_width=True, hide_index=True)
+        st.dataframe(adf, use_container_width=True, hide_index=True)
+        st.caption(f"⚠️ {len(adf)} concerning data point(s) detected across all metrics.")
     else:
-        st.success("No anomalies detected above the threshold.")
+        st.success("✅ No concerning anomalies detected — all metrics look healthy!")
 
     st.divider()
     st.markdown('<div class="section-title">Deep-Dive: Other Income</div>', unsafe_allow_html=True)
@@ -409,7 +443,7 @@ elif page == "⚠️ Anomalies":
                              mode="lines+markers", name="Net Profit",
                              line=dict(color="#00897b", width=2.5),
                              marker=dict(size=7)), row=2, col=1)
-    fig.update_layout(height=480, plot_bgcolor="white", paper_bgcolor="white",
+    fig.update_layout(height=480, template="plotly_white", plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
                       showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
@@ -430,7 +464,7 @@ elif page == "⚠️ Anomalies":
                               line=dict(color="#3949ab", width=2.5), marker=dict(size=7)))
     fig5.add_trace(go.Scatter(x=quarters_str, y=roll_mu, name="4Q Rolling Avg",
                               line=dict(color="#e53935", dash="dot", width=1.8)))
-    fig5.update_layout(height=360, plot_bgcolor="white", paper_bgcolor="white",
+    fig5.update_layout(height=360, template="plotly_white", plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
                        xaxis=dict(tickangle=-30),
                        legend=dict(orientation="h", y=1.12))
     st.plotly_chart(fig5, use_container_width=True)
@@ -492,7 +526,7 @@ elif page == "🔮 Forecasting":
 
         fig.update_layout(
             title=f"{metric_name} — Actual vs Forecast ({unit})",
-            height=440, plot_bgcolor="white", paper_bgcolor="white",
+            height=440, template="plotly_white", plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
             xaxis=dict(tickangle=-30),
             legend=dict(orientation="h", y=1.12),
         )
@@ -605,8 +639,10 @@ elif page == "💬 Commentary":
         )
 
     for c in comments:
+        # Convert **text** markdown to <b>text</b> for HTML rendering
+        c_html = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', c)
         st.markdown(
-            f'<div class="insight-box">{c}</div>', unsafe_allow_html=True
+            f'<div class="insight-box">{c_html}</div>', unsafe_allow_html=True
         )
 
     # ---- Full quarter-by-quarter YoY table ----
@@ -628,7 +664,7 @@ elif page == "💬 Commentary":
     st.dataframe(
         yoy_tbl.style
         .format({"Sales YoY %": "{:+.1f}%", "Net Profit YoY %": "{:+.1f}%", "EPS YoY %": "{:+.1f}%"})
-        .applymap(color_pct, subset=["Sales YoY %", "Net Profit YoY %", "EPS YoY %"]),
+        .map(color_pct, subset=["Sales YoY %", "Net Profit YoY %", "EPS YoY %"]),
         use_container_width=True, hide_index=True,
     )
 
